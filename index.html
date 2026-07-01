@@ -86,6 +86,15 @@
     color:var(--accent2); border-radius:6px; font-size:11.5px; line-height:1.5;
     font-family:'Inter',sans-serif;
   }
+  .section-warning{
+    margin:0 0 12px; padding:10px 12px; background:#2a2018; border:1px solid #4a3420;
+    color:var(--accent2); border-radius:6px; font-size:12px; line-height:1.5;
+    font-family:'Inter',sans-serif;
+  }
+  .section-warning code{
+    font-family:var(--mono); background:#1e1a12; padding:1px 5px;
+    border-radius:3px; font-size:11px;
+  }
   .row{
     display:flex; align-items:center; gap:10px; padding:7px 0;
     border-bottom:1px solid #1c232c;
@@ -185,6 +194,7 @@
     <h1 class="hidden"></h1>
   </div>
   <span class="spacer"></span>
+  <span id="status"></span>
   <button class="btn hidden" id="rawToggleBtn">Raw JSON</button>
   <input type="file" id="fileInput" accept=".json,application/json">
   <button class="btn hidden" id="copyBtn">Copy JSON</button>
@@ -241,10 +251,9 @@ function isSimpleList(val){
   return Array.isArray(val) && val.every(v => typeof v === 'string' || typeof v === 'number');
 }
 
+// Only ever called with plain (non-array) objects — see buildNode.
 function countLeaves(val){
-  if (Array.isArray(val)) return val.length || 1;
-  if (val !== null && typeof val === 'object') return Object.keys(val).length;
-  return 1;
+  return Object.keys(val).length;
 }
 
 function buildNode(container, obj, keyPath){
@@ -260,11 +269,18 @@ function buildNode(container, obj, keyPath){
       det.open = keyPath.length === 0; // top-level sections start open
       sectionRegistry[path.join('.')] = det;
       const sum = document.createElement('summary');
-      sum.innerHTML = `${key}<span class="badge">${countLeaves(val)} setting${countLeaves(val)===1?'':'s'}</span>`;
+      sum.innerHTML = `${escapeHtml(key)}<span class="badge">${countLeaves(val)} setting${countLeaves(val)===1?'':'s'}</span>`;
       det.appendChild(sum);
       const body = document.createElement('div');
       body.className = 'node-body';
       det.appendChild(body);
+      const warnMsg = SECTION_WARNINGS[path.join('.')];
+      if (warnMsg) {
+        const warn = document.createElement('div');
+        warn.className = 'section-warning';
+        warn.innerHTML = '⚠ ' + warnMsg;
+        body.appendChild(warn);
+      }
       buildNode(body, val, path);
       container.appendChild(det);
       return;
@@ -275,17 +291,34 @@ function buildNode(container, obj, keyPath){
       return;
     }
 
-    if (Array.isArray(val) && val.length && typeof val[0] === 'object') {
+    const pathKeyStr = path.join('.');
+    // Require every item to be an object (not just the first) so a mixed-type
+    // array doesn't get miscategorized here — see isObjectArray below.
+    const isObjectArray = Array.isArray(val) && val.length > 0 &&
+      val.every(v => v !== null && typeof v === 'object' && !Array.isArray(v));
+    // Some object-array fields (e.g. customCommands.commands) can legitimately be
+    // emptied out by the user. Without a template we'd lose the ability to add a
+    // properly-shaped item back, so known paths keep a default shape here.
+    const isEmptyKnownObjectArray = Array.isArray(val) && val.length === 0 &&
+      OBJECT_ARRAY_TEMPLATES.hasOwnProperty(pathKeyStr);
+    if (isObjectArray || isEmptyKnownObjectArray) {
       // array of objects (e.g. customCommands.commands) -> collapsible sub-list
       const det = document.createElement('details');
       det.className = 'node';
       det.dataset.path = path.join('.');
       const sum = document.createElement('summary');
-      sum.innerHTML = `${key}<span class="badge">${val.length} item${val.length===1?'':'s'}</span>`;
+      sum.innerHTML = `${escapeHtml(key)}<span class="badge">${val.length} item${val.length===1?'':'s'}</span>`;
       det.appendChild(sum);
       const body = document.createElement('div');
       body.className = 'node-body';
       det.appendChild(body);
+      const warnMsg2 = SECTION_WARNINGS[path.join('.')];
+      if (warnMsg2) {
+        const warn = document.createElement('div');
+        warn.className = 'section-warning';
+        warn.innerHTML = '⚠ ' + warnMsg2;
+        body.appendChild(warn);
+      }
       val.forEach((item, idx) => {
         const sub = document.createElement('details');
         sub.className = 'node';
@@ -312,7 +345,9 @@ function buildNode(container, obj, keyPath){
       addBtn.className = 'add-row-btn';
       addBtn.textContent = '+ add item';
       addBtn.addEventListener('click', () => {
-        const template = JSON.parse(JSON.stringify(val[val.length-1] || {}));
+        const template = val.length
+          ? JSON.parse(JSON.stringify(val[val.length-1]))
+          : JSON.parse(JSON.stringify(OBJECT_ARRAY_TEMPLATES[pathKeyStr] || {}));
         val.push(template);
         renderForm();
       });
@@ -328,6 +363,20 @@ function buildNode(container, obj, keyPath){
 
     if (isSimpleList(val) || (Array.isArray(val) && val.length === 0)) {
       container.appendChild(makeRow(key, path, makeListField(val, path)));
+      return;
+    }
+
+    // Any other array shape (mixed types, arrays of arrays, etc.) — edit items as
+    // raw JSON instead of falling through to a text field, which would stringify
+    // the whole array and corrupt it on save.
+    if (Array.isArray(val)) {
+      container.appendChild(makeRow(key, path, makeMixedListField(val, path)));
+      return;
+    }
+
+    // null -> editable text field, saves back as null if left blank
+    if (val === null) {
+      container.appendChild(makeRow(key, path, makeNullField(path)));
       return;
     }
 
@@ -377,6 +426,18 @@ function setAt(path, value){
 const MUTUALLY_EXCLUSIVE = [
   ['commands.pray.enabled', 'commands.curse.enabled']
 ];
+
+const ADVANCED_USER_WARNING = 'This part is for advanced users — only edit this if you know what you are doing. You\'ll also need to enable the channelSwitcher option in <code>danger.toml</code>.';
+const SECTION_WARNINGS = {
+  'channelSwitcher.users': ADVANCED_USER_WARNING,
+  'channelSwitcher.allUsers': ADVANCED_USER_WARNING,
+};
+
+// Default shape used when "+ add item" is clicked on an object-array field
+// that's currently empty (so there's no existing item to clone from).
+const OBJECT_ARRAY_TEMPLATES = {
+  'customCommands.commands': { enabled: true, command: '', cooldown: 2 },
+};
 const toggleRegistry = {};
 const sectionRegistry = {};
 
@@ -467,6 +528,20 @@ function makeNumberField(val, path){
   return input;
 }
 
+function makeNullField(path){
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = '';
+  input.placeholder = 'null (leave blank to keep as null)';
+  input.style.color = 'var(--muted)';
+  input.addEventListener('focus', () => input.style.color = 'var(--text)');
+  input.addEventListener('change', () => {
+    const v = input.value.trim();
+    setAt(path, v === '' ? null : v);
+  });
+  return input;
+}
+
 function makeTextField(val, path){
   const input = document.createElement('input');
   input.type = 'text';
@@ -552,6 +627,45 @@ function makeListField(val, path){
   return wrap;
 }
 
+// Fallback editor for arrays that mix types (e.g. strings + numbers + objects)
+// or contain nested arrays. Each item is edited as raw JSON text so saving
+// never silently collapses the array into a single stringified value.
+function makeMixedListField(val, path){
+  const wrap = document.createElement('div');
+  wrap.className = 'arr-list';
+  function redraw(){
+    wrap.innerHTML = '';
+    val.forEach((item, idx) => {
+      const itemRow = document.createElement('div');
+      itemRow.className = 'arr-item';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = JSON.stringify(item);
+      input.title = 'This array mixes types, so each item is edited as raw JSON';
+      input.addEventListener('change', () => {
+        try {
+          val[idx] = JSON.parse(input.value);
+        } catch (e) {
+          val[idx] = input.value; // not valid JSON — keep it as a plain string
+        }
+      });
+      const rm = document.createElement('button');
+      rm.className = 'icon-btn'; rm.textContent = '✕'; rm.title = 'Remove';
+      rm.addEventListener('click', () => { val.splice(idx,1); redraw(); });
+      itemRow.appendChild(input);
+      itemRow.appendChild(rm);
+      wrap.appendChild(itemRow);
+    });
+    const addBtn = document.createElement('button');
+    addBtn.className = 'add-row-btn';
+    addBtn.textContent = '+ add value';
+    addBtn.addEventListener('click', () => { val.push(''); redraw(); });
+    wrap.appendChild(addBtn);
+  }
+  redraw();
+  return wrap;
+}
+
 function renderForm(){
   formRoot.innerHTML = '';
   Object.keys(toggleRegistry).forEach(k => delete toggleRegistry[k]);
@@ -560,19 +674,66 @@ function renderForm(){
   if (data === null) {
     guardedControls.forEach(el => el.classList.add('hidden'));
     const empty = document.createElement('div');
-    empty.style.cssText = 'text-align:center; padding:60px 20px; color:var(--muted); border:1px dashed var(--border); border-radius:10px;';
-    empty.innerHTML = `
-      <div style="font-family:var(--mono); font-size:14px; color:var(--text); margin-bottom:8px;">No file loaded</div>
-      <div style="font-size:13px; margin-bottom:18px;">Open a settings.json to start editing.</div>
-    `;
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex; gap:10px; justify-content:center;';
-    const openBtn = document.createElement('button');
-    openBtn.className = 'btn primary';
-    openBtn.textContent = 'Open file…';
-    openBtn.addEventListener('click', () => document.getElementById('fileInput').click());
-    btnRow.append(openBtn);
-    empty.appendChild(btnRow);
+    empty.style.cssText = 'padding:40px 20px; border:1px dashed var(--border); border-radius:10px;';
+
+    function makeConfigCard(title, desc, uploadLabel, templateFile, titleText){
+      const card = document.createElement('div');
+      card.style.cssText = 'text-align:center; padding:28px 20px;';
+      card.innerHTML = `
+        <div style="font-family:var(--mono); font-size:13px; font-weight:700; color:var(--text); margin-bottom:4px;">${title}</div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:16px;">${desc}</div>
+      `;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; gap:8px; justify-content:center;';
+
+      const uploadBtn = document.createElement('button');
+      uploadBtn.className = 'btn primary';
+      uploadBtn.textContent = uploadLabel;
+      uploadBtn.addEventListener('click', () => {
+        document.getElementById('fileInput')._expectedName = templateFile;
+        document.getElementById('fileInput').click();
+      });
+
+      const tmplBtn = document.createElement('button');
+      tmplBtn.className = 'btn';
+      tmplBtn.textContent = 'Use template';
+      tmplBtn.addEventListener('click', async () => {
+        try {
+          const res = await fetch('./' + templateFile, {cache: 'no-store'});
+          if (res.ok) {
+            data = await res.json();
+            document.querySelector('h1').textContent = titleText + ' (template)';
+            renderForm();
+            return;
+          }
+        } catch(e) {}
+        toast('No template found — add ' + templateFile + ' to your repo', true);
+      });
+
+      row.append(uploadBtn, tmplBtn);
+      card.appendChild(row);
+      return card;
+    }
+
+    const divider = document.createElement('div');
+    divider.style.cssText = 'border-top:1px solid var(--border); margin:0 20px;';
+
+    empty.appendChild(makeConfigCard(
+      'Settings',
+      'Per-account settings: commands, cooldowns, gamble, etc.',
+      'Upload settings.json',
+      'settings.json',
+      'settings.json'
+    ));
+    empty.appendChild(divider);
+    empty.appendChild(makeConfigCard(
+      'Global Settings',
+      'Global settings: webhook, captcha, notifications, etc.',
+      'Upload global_settings.json',
+      'global_settings.json',
+      'global_settings.json'
+    ));
+
     formRoot.appendChild(empty);
     rawArea.value = '';
     setStatus('no file loaded');
@@ -623,12 +784,8 @@ document.getElementById('search').addEventListener('input', (e) => {
     const match = r.dataset.path.includes(q) || r.dataset.key.includes(q);
     r.style.display = match ? '' : 'none';
   });
-  // show/hide & open sections that contain a visible row
-  allDetails.forEach(d => {
-    const hasVisible = !!d.querySelector('.row:not([style*="display: none"])') ||
-                        Array.from(d.querySelectorAll('details.node')).some(sd => sd.style.display !== 'none');
-  });
-  // second pass bottom-up for nested sections
+  // show/hide & open sections that contain a visible row (bottom-up so nested
+  // sections are resolved before the sections that contain them)
   Array.from(allDetails).reverse().forEach(d => {
     const visibleRow = Array.from(d.querySelectorAll(':scope > .node-body > .row')).some(r => r.style.display !== 'none');
     const visibleSub = Array.from(d.querySelectorAll(':scope > .node-body > details.node')).some(sd => sd.style.display !== 'none');
@@ -640,7 +797,10 @@ document.getElementById('search').addEventListener('input', (e) => {
 
 // load file
 document.getElementById('fileInput').addEventListener('change', (e) => {
-  const file = e.target.files[0];
+  const fileInputEl = e.target;
+  const expectedName = fileInputEl._expectedName;
+  fileInputEl._expectedName = null; // consume so it doesn't leak into the next upload
+  const file = fileInputEl.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
@@ -648,7 +808,11 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
       data = JSON.parse(reader.result);
       document.querySelector('h1').textContent = file.name;
       renderForm();
-      toast('Loaded ' + file.name);
+      if (expectedName && file.name !== expectedName) {
+        toast(`Loaded "${file.name}" — heads up, this slot is usually for ${expectedName}`, true);
+      } else {
+        toast('Loaded ' + file.name);
+      }
     } catch (err) {
       toast('Could not parse that file as JSON', true);
     }
@@ -695,33 +859,19 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = document.querySelector('h1').textContent || 'config.json';
+  a.download = (document.querySelector('h1').textContent || 'settings.json').replace(/\s*\(.*?\)$/, '').trim() || 'settings.json';
   a.click();
   URL.revokeObjectURL(url);
   setStatus('downloaded just now');
   toast('Downloaded ' + a.download);
 });
 
-// Load order: 1) an external template.json sitting next to this file
-// (works when hosted on GitHub Pages or any http(s) server — lets you
-// update the schema by just replacing template.json, no HTML edits),
-// 2) the inline DEFAULT_DATA above, 3) empty state.
-// Note: fetch of a local template.json will NOT work if you just
-// double-click this html file (file:// blocks it) — only over http(s).
+// Only auto-fill if DEFAULT_DATA is explicitly set in the code above.
+// The "Use template" button on the homepage handles fetching settings.json.
 async function loadInitialData(){
-  try {
-    const res = await fetch('./template.json', {cache: 'no-store'});
-    if (res.ok) {
-      data = await res.json();
-      document.querySelector('h1').textContent = 'config.json (template)';
-      return;
-    }
-  } catch (e) {
-    // no template.json reachable — fall through to inline default / empty
-  }
   if (DEFAULT_DATA !== null) {
     data = DEFAULT_DATA;
-    document.querySelector('h1').textContent = 'config.json (default)';
+    document.querySelector('h1').textContent = 'settings.json (default)';
   }
 }
 
