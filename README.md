@@ -25,7 +25,7 @@ The template files are optional — without them you can still just upload your 
 
 ## Notes
 
-- Made using claude, expect bugs and errors. PR's are welcomed.
+- **Made using Claude, expect bugs and errors. PR's are welcomed.**
 - Everything runs client-side. Nothing is uploaded anywhere — files never leave your browser.
 - `pray` and `curse` can't both be enabled at once (they share the same cooldown window); enabling one turns the other off automatically.
 - The `channelSwitcher` section is flagged as advanced — only touch it if you know what you're doing, and it also needs to be enabled in `danger.toml`.
